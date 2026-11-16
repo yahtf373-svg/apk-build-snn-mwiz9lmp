@@ -1,0 +1,6 @@
+{
+  "name": "سنن",
+  "description": "تطبيق سنن لمتابعة السنن الرواتب والأذكار والأدعية ومواقيت الصلاة والشعلة اليومية.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

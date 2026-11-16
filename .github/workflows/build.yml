@@ -1,0 +1,294 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: "سنن"
+  PACKAGE_ID: "com.apkpro.snn"
+  VERSION_NAME: "1.0.0"
+  VERSION_CODE: "10000"
+  PKG_PATH: "com/apkpro/snn"
+  SCREEN_ORIENTATION: "unspecified"
+  SAFE_APK_NAME: "snn.apk"
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Smart Build Web Project (React / Vite / TS or Static HTML)
+        run: |
+          mkdir -p www
+          if [ -f "source-app/package.json" ]; then
+            echo "Detected buildable source project in source-app/"
+            cd source-app
+            node - <<'NODE_VITE'
+          const fs = require('fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const configFiles = ['vite.config.ts', 'vite.config.js', 'vite.config.mts', 'vite.config.mjs'];
+          let foundViteConfig = false;
+          for (const cfgFile of configFiles) {
+            if (fs.existsSync(cfgFile)) {
+              foundViteConfig = true;
+              let cfg = fs.readFileSync(cfgFile, 'utf8');
+              if (/\bbase\s*:/.test(cfg)) {
+                cfg = cfg.replace(/\bbase\s*:\s*(['"`])[^'"`]*\1/, "base: './'");
+              } else if (/defineConfig\s*\(\s*\{/.test(cfg)) {
+                cfg = cfg.replace(/defineConfig\s*\(\s*\{/, "defineConfig({\n  base: './',");
+              } else if (/defineConfig\s*\([\s\S]*?return\s*\{/.test(cfg)) {
+                cfg = cfg.replace(/return\s*\{/, "return {\n    base: './',");
+              } else if (/export\s+default\s+\{/.test(cfg)) {
+                cfg = cfg.replace(/export\s+default\s+\{/, "export default {\n  base: './',");
+              }
+              fs.writeFileSync(cfgFile, cfg, 'utf8');
+              console.log('Ensured base: "./" in', cfgFile);
+            }
+          }
+          const deps = Object.assign({}, pkg.dependencies || {}, pkg.devDependencies || {});
+          if (!foundViteConfig && deps.vite) {
+            fs.writeFileSync('vite.config.mjs', "export default {\n  base: './'\n};\n", 'utf8');
+          }
+          NODE_VITE
+            npm install --legacy-peer-deps
+            if node -e "const p=require('./package.json'); process.exit((p.scripts&&p.scripts.build&&/\bvite\b/.test(p.scripts.build)&&!/&&|;/.test(p.scripts.build))?0:1)"; then
+              npm run build -- --base=./
+            else
+              npm run build
+            fi
+            BUILD_OUT=""
+            for dir in dist build out; do
+              if [ -f "$dir/index.html" ]; then
+                BUILD_OUT="$dir"
+                break
+              fi
+            done
+            if [ -z "$BUILD_OUT" ]; then
+              echo "ERROR: Build completed but no dist/build/out index.html found"
+              exit 1
+            fi
+            rm -rf ../www/*
+            cp -r "$BUILD_OUT"/. ../www/
+            cd ..
+          elif [ -f "package.json" ] && node -e "const p=require('./package.json'); process.exit(p.scripts&&p.scripts.build?0:1)"; then
+            echo "Detected buildable project in repository root"
+            node - <<'NODE_VITE_ROOT'
+          const fs = require('fs');
+          for (const cfgFile of ['vite.config.ts', 'vite.config.js', 'vite.config.mts', 'vite.config.mjs']) {
+            if (fs.existsSync(cfgFile)) {
+              let cfg = fs.readFileSync(cfgFile, 'utf8');
+              if (/\bbase\s*:/.test(cfg)) {
+                cfg = cfg.replace(/\bbase\s*:\s*(['"`])[^'"`]*\1/, "base: './'");
+              } else if (/defineConfig\s*\(\s*\{/.test(cfg)) {
+                cfg = cfg.replace(/defineConfig\s*\(\s*\{/, "defineConfig({\n  base: './',");
+              } else if (/defineConfig\s*\([\s\S]*?return\s*\{/.test(cfg)) {
+                cfg = cfg.replace(/return\s*\{/, "return {\n    base: './',");
+              } else if (/export\s+default\s+\{/.test(cfg)) {
+                cfg = cfg.replace(/export\s+default\s+\{/, "export default {\n  base: './',");
+              }
+              fs.writeFileSync(cfgFile, cfg, 'utf8');
+            }
+          }
+          NODE_VITE_ROOT
+            npm install --legacy-peer-deps
+            if node -e "const p=require('./package.json'); process.exit((p.scripts&&p.scripts.build&&/\bvite\b/.test(p.scripts.build)&&!/&&|;/.test(p.scripts.build))?0:1)"; then
+              npm run build -- --base=./
+            else
+              npm run build
+            fi
+            for dir in dist build out; do
+              if [ -f "$dir/index.html" ]; then
+                rm -rf www/*
+                cp -r "$dir"/. www/
+                break
+              fi
+            done
+          else
+            echo "Detected static HTML/CSS/JS project"
+            if [ ! -f "www/index.html" ] && [ -f "index.html" ]; then
+              cp -r *.html *.js *.css *.json assets icons images fonts www/ 2>/dev/null || true
+            fi
+          fi
+
+          if [ -f "www/index.html" ]; then
+            node - <<'NODE_HTML_FIX'
+          const fs = require('fs');
+          let html = fs.readFileSync('www/index.html', 'utf8');
+          html = html.replace(/(\b(?:src|href|poster|data-src)=["'])\/(?!\/)/gi, '$1./');
+          html = html.replace(/<base\s+href=["']\/["']\s*\/?>/gi, '<base href="./" />');
+          if (fs.existsSync('android-overrides/www/android-native-bridge.js')) {
+            fs.copyFileSync('android-overrides/www/android-native-bridge.js', 'www/android-native-bridge.js');
+            if (!html.includes('android-native-bridge.js')) {
+              const tag = '<script src="./android-native-bridge.js"></' + 'script>';
+              html = /<\/head>/i.test(html)
+                ? html.replace(/<\/head>/i, '  ' + tag + '\n  </head>')
+                : (tag + '\n' + html);
+            }
+          }
+          fs.writeFileSync('www/index.html', html, 'utf8');
+          NODE_HTML_FIX
+          fi
+
+      - name: Initialize Clean Capacitor Project & Add Android
+        run: |
+          rm -rf android package.json package-lock.json capacitor.config.json capacitor.config.ts
+          mkdir -p www
+          npm init -y
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/filesystem@6 @capacitor/share@6 @capacitor/camera@6 @capacitor/geolocation@6
+          node -e "const fs=require('fs'); fs.writeFileSync('capacitor.config.json', JSON.stringify({ appId: process.env.PACKAGE_ID, appName: process.env.APP_NAME, webDir: 'www', bundledWebRuntime: false, server: { androidScheme: 'https' }, android: { allowMixedContent: true, captureInput: true, webContentsDebuggingEnabled: false } }, null, 2));"
+          npx cap add android
+          npx cap sync android
+
+      - name: Inject Android Permissions, Native Bridges & App Version
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const manifestPath = path.join('android', 'app', 'src', 'main', 'AndroidManifest.xml');
+          let manifest = fs.readFileSync(manifestPath, 'utf8');
+
+          if (!manifest.includes('xmlns:tools=')) {
+            manifest = manifest.replace(
+              /<manifest\b/,
+              '<manifest xmlns:tools="http://schemas.android.com/tools"'
+            );
+          }
+
+          const entries = [{"name":"android.permission.INTERNET"},{"name":"android.permission.ACCESS_NETWORK_STATE"},{"name":"android.permission.CAMERA"},{"name":"android.permission.RECORD_AUDIO"},{"name":"android.permission.MODIFY_AUDIO_SETTINGS"},{"name":"android.permission.ACCESS_FINE_LOCATION"},{"name":"android.permission.ACCESS_COARSE_LOCATION"},{"name":"android.permission.READ_EXTERNAL_STORAGE","attrs":"android:maxSdkVersion=\"32\""},{"name":"android.permission.WRITE_EXTERNAL_STORAGE","attrs":"android:maxSdkVersion=\"32\""},{"name":"android.permission.READ_MEDIA_IMAGES"},{"name":"android.permission.READ_MEDIA_VIDEO"},{"name":"android.permission.READ_MEDIA_AUDIO"},{"name":"android.permission.VIBRATE"},{"name":"android.permission.WAKE_LOCK"},{"tag":"uses-feature","name":"android.hardware.camera","attrs":"android:required=\"false\""},{"tag":"uses-feature","name":"android.hardware.camera.autofocus","attrs":"android:required=\"false\""},{"tag":"uses-feature","name":"android.hardware.microphone","attrs":"android:required=\"false\""},{"tag":"uses-feature","name":"android.hardware.location.gps","attrs":"android:required=\"false\""}];
+          const permissionTags = [];
+          for (const entry of entries) {
+            const tagName = entry.tag || 'uses-permission';
+            if (!manifest.includes(entry.name)) {
+              const attr = entry.attrs ? ' ' + entry.attrs : '';
+              permissionTags.push('    <' + tagName + ' android:name="' + entry.name + '"' + attr + ' />');
+            }
+          }
+          if (permissionTags.length > 0) {
+            manifest = manifest.replace(
+              /<application(?=\s|>)/,
+              permissionTags.join('\n') + '\n\n    <application'
+            );
+          }
+
+          const appAttrs = [];
+          if (!manifest.includes('android:usesCleartextTraffic')) {
+            appAttrs.push('android:usesCleartextTraffic="true"');
+          }
+          if (!manifest.includes('android:supportsRtl')) {
+            appAttrs.push('android:supportsRtl="true"');
+          }
+          if (!manifest.includes('android:requestLegacyExternalStorage')) {
+            appAttrs.push('android:requestLegacyExternalStorage="true"');
+          }
+          if (appAttrs.length > 0) {
+            manifest = manifest.replace(
+              /<application\b/,
+              '<application\n        ' + appAttrs.join('\n        ')
+            );
+          }
+
+          const orientation = process.env.SCREEN_ORIENTATION;
+          if (orientation && orientation !== 'unspecified' && !manifest.includes('android:screenOrientation')) {
+            manifest = manifest.replace(
+              /<activity\b/,
+              '<activity\n            android:screenOrientation="' + orientation + '"'
+            );
+          }
+
+          fs.writeFileSync(manifestPath, manifest, 'utf8');
+
+          const gradlePath = path.join('android', 'app', 'build.gradle');
+          if (fs.existsSync(gradlePath)) {
+            let gradle = fs.readFileSync(gradlePath, 'utf8');
+            gradle = gradle.replace(/versionCode\s+\d+/, 'versionCode ' + process.env.VERSION_CODE);
+            gradle = gradle.replace(/versionName\s+"[^"]*"/, 'versionName "' + process.env.VERSION_NAME + '"');
+            fs.writeFileSync(gradlePath, gradle, 'utf8');
+          }
+          NODE
+
+          mkdir -p android/app/src/main/res/xml
+          cp android-overrides/res/xml/file_paths.xml android/app/src/main/res/xml/file_paths.xml
+          mkdir -p "android/app/src/main/java/$PKG_PATH"
+          cp android-overrides/java/MainActivity.java "android/app/src/main/java/$PKG_PATH/MainActivity.java"
+
+      - name: Replace Default Capacitor Icon with Custom App Icon
+        if: hashFiles('app_icon.png') != ''
+        run: |
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26
+          python3 -m pip install --quiet pillow || true
+          python3 - <<'PY'
+          import os, shutil
+          sizes = {
+              'mipmap-mdpi': 48,
+              'mipmap-hdpi': 72,
+              'mipmap-xhdpi': 96,
+              'mipmap-xxhdpi': 144,
+              'mipmap-xxxhdpi': 192,
+          }
+          try:
+              from PIL import Image
+              img = Image.open('app_icon.png').convert('RGBA')
+              for folder, sz in sizes.items():
+                  out_dir = os.path.join('android/app/src/main/res', folder)
+                  os.makedirs(out_dir, exist_ok=True)
+                  resized = img.resize((sz, sz), Image.Resampling.LANCZOS)
+                  resized.save(os.path.join(out_dir, 'ic_launcher.png'))
+                  resized.save(os.path.join(out_dir, 'ic_launcher_round.png'))
+          except Exception as e:
+              print("PIL resize fallback to direct copy:", e)
+              for folder in sizes:
+                  out_dir = os.path.join('android/app/src/main/res', folder)
+                  os.makedirs(out_dir, exist_ok=True)
+                  shutil.copyfile('app_icon.png', os.path.join(out_dir, 'ic_launcher.png'))
+                  shutil.copyfile('app_icon.png', os.path.join(out_dir, 'ic_launcher_round.png'))
+          PY
+
+      - name: Sync Capacitor Web Assets
+        run: npx cap sync android
+
+      - name: Build Debug APK with Gradle
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace --no-daemon
+
+      - name: Prepare Release APK
+        run: |
+          mkdir -p release
+          cp android/app/build/outputs/apk/debug/app-debug.apk "release/$SAFE_APK_NAME"
+
+      - name: Publish Direct APK GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ env.VERSION_NAME }}-build-${{ github.run_number }}"
+          name: "APK Build v${{ env.VERSION_NAME }} (#${{ github.run_number }})"
+          files: "release/${{ env.SAFE_APK_NAME }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
